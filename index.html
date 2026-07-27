@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>LSTM Time Series Predictor</title>
+
+<!-- Google Fonts -->
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
+<!-- Plotly -->
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js">
+// ── CATEGORY OPTIONS MAP ─────────────────────
+const CATEGORY_OPTIONS = {
+  weather: ["Hyderabad","Mumbai","Delhi","Chennai","Bangalore","Kolkata"],
+  covid:   ["India","USA","UK","Brazil","Italy","South Africa"],
+  sales:   ["E-Commerce Store","Retail Chain","Supermarket","Fashion Store","Electronics Shop"],
+  energy:  ["Delhi","Mumbai","Chennai","Kolkata","Hyderabad","Bangalore"],
+};
+
+const CATEGORY_LABELS = {
+  weather: "Temperature (°C)",
+  covid:   "Daily New Cases",
+  sales:   "Daily Revenue (Rs.)",
+  energy:  "Electricity Demand (MW)",
+};
+
+function updateCategoryOptions(){
+  const cat    = document.getElementById('categoryType').value;
+  const sel    = document.getElementById('categoryOption');
+  const opts   = CATEGORY_OPTIONS[cat] || [];
+  sel.innerHTML = opts.map(o => `<option value="${o}">${o}</option>`).join('');
+}
+
+async function loadCategoryData(){
+  const category = document.getElementById('categoryType').value;
+  const option   = document.getElementById('categoryOption').value;
+  const info     = document.getElementById('categoryInfo');
+  info.style.display = 'block';
+  info.textContent   = 'Generating ' + category + ' data...';
+  log('Loading ' + category + ' data for ' + option + '...', 'warn');
+  try{
+    const res  = await fetch('/api/category-data', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({category, option})
+    });
+    const data = await res.json();
+    if(!data.success) throw new Error(data.error);
+    currentData = {dates: data.dates, values: data.values, label: data.label};
+    renderRawChart(currentData);
+    document.getElementById('trainBtn').disabled = false;
+    info.innerHTML = '✓ ' + data.label + '<br/>Points: ' + data.values.length + '<br/>' +
+      '💾 Saved: downloaded_data/' + (data.saved_file || '');
+    log('Loaded: ' + data.label + ' (' + data.values.length + ' points)', 'ok');
+    if(data.saved_file) log('CSV saved: downloaded_data/' + data.saved_file, 'ok');
+    showToast('Saved: ' + (data.saved_file || data.label));
+  }catch(e){
+    info.textContent = 'Error: ' + e.message;
+    log('Error: ' + e.message, 'error');
+    showToast('Error: ' + e.message, true);
+  }
+}
+</script>
+
+<style>
+/* ═══════════════════════════════════════════════
+   DESIGN SYSTEM  — cyber / deep-space dark theme
+   ═══════════════════════════════════════════════ */
+:root{
+  --bg-void:    #020408;
+  --bg-panel:   #060d1a;
+  --bg-card:    #0a1628;
+  --bg-hover:   #0e1e38;
+  --neon-cyan:  #00f5ff;
+  --neon-pink:  #ff0080;
+  --neon-lime:  #39ff14;
+  --neon-gold:  #ffd700;
+  --neon-violet:#bf5fff;
+  --accent1:    #00b4d8;
+  --accent2:    #7b2ff7;
+  --text-hi:    #e8f4f8;
+  --text-mid:   #7fa8c0;
+  --text-dim:   #2e4a60;
+  --border:     rgba(0,245,255,.12);
+  --glow-cyan:  0 0 20px rgba(0,245,255,.4), 0 0 60px rgba(0,245,255,.15);
+  --glow-pink:  0 0 20px rgba(255,0,128,.4), 0 0 60px rgba(255,0,128,.15);
+  --glow-lime:  0 0 20px rgba(57,255,20,.4);
+  --radius:     12px;
+  --font-head:  'Orbitron', sans-serif;
+  --font-body:  'Rajdhani', sans-serif;
+  --font-mono:  'Share Tech Mono', monospace;
+}
+
+*{margin:0;padding:0;box-sizing:border-box}
+
+html{scroll-behavior:smooth}
+
+body{
+  background:var(--bg-void);
+  color:var(--text-hi);
+  font-family:var(--font-body);
+  font-size:16px;
+  min-height:100vh;
+  overflow-x:hidden;
+}
+
+/* ── ANIMATED GRID BG ── */
+body::before{
+  content:'';
+  position:fixed;inset:0;
+  background-image:
+    linear-gradient(rgba(0,245,255,.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,245,255,.03) 1px, transparent 1px);
+  background-size:60px 60px;
+  animation:gridMove 20s linear infinite;
+  pointer-events:none;z-index:0;
+}
+@keyframes gridMove{to{background-position:60px 60px}}
+
+/* ── PARTICLE DOTS ── */
+body::after{
+  content:'';
+  position:fixed;inset:0;
+  background:
+    radial-gradient(2px 2px at 10% 20%, rgba(0,245,255,.6),transparent),
+    radial-gradient(2px 2px at 80% 10%, rgba(255,0,128,.6),transparent),
+    radial-gradient(2px 2px at 60% 80%, rgba(57,255,20,.5),transparent),
+    radial-gradient(2px 2px at 30% 70%, rgba(191,95,255,.5),transparent),
+    radial-gradient(2px 2px at 90% 50%, rgba(0,245,255,.4),transparent);
+  animation:particleDrift 8s ease-in-out infinite alternate;
+  pointer-events:none;z-index:0;
+}
+@keyframes particleDrift{
+  from{opacity:.4;transform:translate(0,0)}
+  to  {opacity:1; transform:translate(10px,-15px)}
+}
+
+/* ── LAYOUT ── */
+.wrapper{position:relative;z-index:1;max-width:1400px;margin:0 auto;padding:0 24px}
+
+/* ── HEADER ── */
+header{
+  padding:36px 0 28px;
+  border-bottom:1px solid var(--border);
+  position:relative;overflow:hidden;
+}
+.header-inner{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.logo{
+  width:52px;height:52px;border-radius:10px;
+  background:linear-gradient(135deg,var(--neon-cyan),var(--accent2));
+  display:flex;align-items:center;justify-content:center;
+  font-size:24px;
+  box-shadow:var(--glow-cyan);
+  animation:logoPulse 3s ease-in-out infinite;
+}
+@keyframes logoPulse{
+  0%,100%{box-shadow:var(--glow-cyan)}
+  50%    {box-shadow:0 0 40px rgba(0,245,255,.8),0 0 80px rgba(0,245,255,.3)}
+}
+.header-text h1{
+  font-family:var(--font-head);
+  font-size:clamp(1.4rem,3vw,2.2rem);
+  font-weight:900;
+  background:linear-gradient(90deg,var(--neon-cyan),var(--neon-violet),var(--neon-pink));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  letter-spacing:3px;
+  animation:gradShift 4s ease infinite;
+  background-size:200%;
+}
+@keyframes gradShift{
+  0%,100%{background-position:0%}50%{background-position:100%}
+}
+.header-text p{color:var(--text-mid);font-size:.95rem;margin-top:4px;letter-spacing:1px}
+.status-badge{
+  margin-left:auto;
+  background:rgba(57,255,20,.1);border:1px solid var(--neon-lime);
+  color:var(--neon-lime);padding:6px 16px;border-radius:20px;
+  font-family:var(--font-mono);font-size:.8rem;
+  display:flex;align-items:center;gap:8px;
+}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--neon-lime);
+  animation:blink 1.5s step-end infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
+/* ── GRID LAYOUT ── */
+.main-grid{
+  display:grid;
+  grid-template-columns:320px 1fr;
+  gap:20px;
+  padding:24px 0;
+}
+@media(max-width:900px){.main-grid{grid-template-columns:1fr}}
+
+/* ── SIDEBAR ── */
+.sidebar{display:flex;flex-direction:column;gap:16px}
+
+/* ── CARD ── */
+.card{
+  background:var(--bg-card);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:20px;
+  position:relative;overflow:hidden;
+  transition:border-color .3s,transform .2s;
+}
+.card:hover{border-color:rgba(0,245,255,.3);transform:translateY(-1px)}
+.card::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,var(--neon-cyan),var(--accent2),var(--neon-pink));
+}
+.card-title{
+  font-family:var(--font-head);
+  font-size:.75rem;letter-spacing:2px;
+  color:var(--neon-cyan);margin-bottom:16px;
+  text-transform:uppercase;
+  display:flex;align-items:center;gap:8px;
+}
+.card-title .icon{font-size:1rem}
+
+/* ── FORM CONTROLS ── */
+.form-group{margin-bottom:14px}
+label{
+  display:block;font-size:.82rem;letter-spacing:1px;
+  color:var(--text-mid);margin-bottom:6px;text-transform:uppercase;
+}
+select,input[type=range],input[type=file]{width:100%}
+select{
+  background:var(--bg-panel);color:var(--text-hi);
+  border:1px solid var(--border);border-radius:8px;
+  padding:10px 12px;font-family:var(--font-body);font-size:.95rem;
+  appearance:none;cursor:pointer;transition:border-color .2s,box-shadow .2s;
+}
+select:focus{outline:none;border-color:var(--neon-cyan);box-shadow:0 0 0 2px rgba(0,245,255,.15)}
+input[type=range]{
+  -webkit-appearance:none;height:6px;border-radius:3px;
+  background:var(--bg-panel);border:1px solid var(--border);cursor:pointer;
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:18px;height:18px;border-radius:50%;
+  background:linear-gradient(135deg,var(--neon-cyan),var(--accent2));
+  box-shadow:0 0 10px var(--neon-cyan);cursor:pointer;
+}
+.range-display{
+  display:flex;justify-content:space-between;align-items:center;margin-top:4px;
+}
+.range-val{
+  font-family:var(--font-mono);color:var(--neon-cyan);font-size:.9rem;
+  background:rgba(0,245,255,.08);padding:2px 8px;border-radius:4px;
+}
+
+/* ── FILE UPLOAD ── */
+.upload-zone{
+  border:2px dashed var(--border);border-radius:10px;padding:24px 16px;
+  text-align:center;cursor:pointer;transition:all .3s;
+  color:var(--text-mid);font-size:.9rem;
+}
+.upload-zone:hover,.upload-zone.dragover{
+  border-color:var(--neon-cyan);background:rgba(0,245,255,.05);
+  color:var(--text-hi);
+}
+.upload-zone input{display:none}
+.upload-icon{font-size:2rem;margin-bottom:8px}
+
+/* ── BUTTONS ── */
+.btn{
+  width:100%;padding:14px;border:none;border-radius:10px;
+  font-family:var(--font-head);font-size:.8rem;letter-spacing:2px;
+  cursor:pointer;transition:all .3s;position:relative;overflow:hidden;
+}
+.btn-primary{
+  background:linear-gradient(135deg,var(--accent1),var(--accent2));
+  color:#fff;
+}
+.btn-primary:hover:not(:disabled){
+  transform:translateY(-2px);
+  box-shadow:0 8px 30px rgba(0,180,216,.4);
+}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-secondary{
+  background:transparent;color:var(--neon-cyan);
+  border:1px solid var(--neon-cyan);
+}
+.btn-secondary:hover{background:rgba(0,245,255,.08)}
+.btn::after{
+  content:'';position:absolute;top:50%;left:50%;
+  width:0;height:0;border-radius:50%;
+  background:rgba(255,255,255,.2);transform:translate(-50%,-50%);
+  transition:width .5s,height .5s,opacity .5s;opacity:0;
+}
+.btn:active::after{width:300px;height:300px;opacity:0}
+
+/* ── CHARTS AREA ── */
+.charts-area{display:flex;flex-direction:column;gap:16px}
+
+/* ── CHART CARD ── */
+.chart-card{
+  background:var(--bg-card);border:1px solid var(--border);
+  border-radius:var(--radius);padding:20px;position:relative;overflow:hidden;
+  transition:border-color .3s;
+}
+.chart-card:hover{border-color:rgba(0,245,255,.25)}
+.chart-card::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,var(--neon-pink),var(--accent2),var(--neon-cyan));
+}
+.chart-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.chart-title{
+  font-family:var(--font-head);font-size:.75rem;letter-spacing:2px;
+  color:var(--neon-pink);text-transform:uppercase;
+}
+.chart-subtitle{font-size:.8rem;color:var(--text-mid);margin-top:2px}
+
+/* ── METRICS ROW ── */
+.metrics-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.metric-card{
+  background:var(--bg-panel);border:1px solid var(--border);
+  border-radius:10px;padding:16px;text-align:center;position:relative;overflow:hidden;
+  transition:all .3s;
+}
+.metric-card:hover{transform:translateY(-3px)}
+.metric-card::after{
+  content:'';position:absolute;bottom:0;left:0;right:0;height:3px;
+}
+.metric-card:nth-child(1)::after{background:var(--neon-cyan)}
+.metric-card:nth-child(2)::after{background:var(--neon-pink)}
+.metric-card:nth-child(3)::after{background:var(--neon-lime)}
+.metric-label{font-size:.7rem;letter-spacing:2px;color:var(--text-mid);margin-bottom:6px;text-transform:uppercase}
+.metric-value{
+  font-family:var(--font-mono);font-size:1.6rem;font-weight:700;
+  background:linear-gradient(135deg,var(--neon-cyan),var(--neon-violet));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+}
+.metric-unit{font-size:.75rem;color:var(--text-dim);margin-top:2px}
+
+/* ── PROGRESS / LOADING ── */
+.progress-overlay{
+  position:absolute;inset:0;background:rgba(2,4,8,.88);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  border-radius:var(--radius);z-index:10;gap:16px;
+  opacity:0;pointer-events:none;transition:opacity .3s;
+}
+.progress-overlay.active{opacity:1;pointer-events:all}
+.spinner{
+  width:60px;height:60px;border-radius:50%;
+  border:3px solid var(--border);
+  border-top-color:var(--neon-cyan);
+  animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.progress-text{font-family:var(--font-mono);color:var(--neon-cyan);font-size:.9rem}
+.progress-bar-wrap{width:200px;height:4px;background:var(--bg-panel);border-radius:2px;overflow:hidden}
+.progress-bar{
+  height:100%;border-radius:2px;
+  background:linear-gradient(90deg,var(--neon-cyan),var(--accent2));
+  animation:progressAnim 2s ease-in-out infinite;
+}
+@keyframes progressAnim{
+  0%{width:0;margin-left:0}50%{width:70%;margin-left:0}100%{width:0;margin-left:100%}
+}
+
+/* ── LOG CONSOLE ── */
+.console{
+  background:var(--bg-void);border:1px solid var(--border);
+  border-radius:10px;padding:12px 16px;
+  font-family:var(--font-mono);font-size:.8rem;
+  max-height:160px;overflow-y:auto;
+  line-height:1.8;
+}
+.console::-webkit-scrollbar{width:4px}
+.console::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.log-info {color:var(--neon-cyan)}
+.log-ok   {color:var(--neon-lime)}
+.log-warn {color:var(--neon-gold)}
+.log-error{color:var(--neon-pink)}
+
+/* ── TOAST ── */
+.toast{
+  position:fixed;bottom:30px;right:30px;z-index:999;
+  background:var(--bg-card);border-radius:10px;padding:14px 20px;
+  border-left:4px solid var(--neon-lime);
+  font-family:var(--font-body);font-size:.9rem;color:var(--text-hi);
+  transform:translateX(120%);transition:transform .4s cubic-bezier(.34,1.56,.64,1);
+  max-width:320px;box-shadow:0 8px 40px rgba(0,0,0,.5);
+}
+.toast.show{transform:translateX(0)}
+.toast.error{border-left-color:var(--neon-pink)}
+
+/* ── PLACEHOLDER ── */
+.chart-placeholder{
+  height:280px;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:12px;
+  color:var(--text-dim);font-family:var(--font-mono);font-size:.85rem;
+}
+.placeholder-icon{font-size:3rem;opacity:.4;animation:floatIcon 3s ease-in-out infinite}
+@keyframes floatIcon{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+
+/* ── TABS ── */
+.tabs{display:flex;gap:4px;background:var(--bg-void);
+  border-radius:10px;padding:4px;margin-bottom:16px}
+.tab{
+  flex:1;padding:10px;text-align:center;border-radius:8px;cursor:pointer;
+  font-family:var(--font-head);font-size:.7rem;letter-spacing:1.5px;
+  color:var(--text-mid);transition:all .2s;
+}
+.tab.active{background:var(--bg-card);color:var(--neon-cyan);box-shadow:var(--glow-cyan)}
+.tab:hover:not(.active){color:var(--text-hi);background:var(--bg-hover)}
+.tab-content{display:none}.tab-content.active{display:block}
+
+/* ── ANIMATE-IN ── */
+@keyframes slideIn{
+  from{opacity:0;transform:translateY(20px)}
+  to  {opacity:1;transform:translateY(0)}
+}
+.animate-in{animation:slideIn .5s ease both}
+.delay-1{animation-delay:.1s}.delay-2{animation-delay:.2s}
+.delay-3{animation-delay:.3s}.delay-4{animation-delay:.4s}
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:var(--bg-void)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ HEADER ═══════════════ -->
+<div class="wrapper">
+  <header>
+    <div class="header-inner">
+      <div class="logo">🧠</div>
+      <div class="header-text">
+        <h1>LSTM PREDICTOR</h1>
+        <p>Long Short-Term Memory · Time Series Forecasting Engine</p>
+      </div>
+      <div class="status-badge">
+        <span class="dot"></span> SYSTEM ONLINE
+      </div>
+    </div>
+  </header>
+</div>
+
+<!-- ═══════════════ MAIN LAYOUT ═══════════════ -->
+<div class="wrapper">
+<div class="main-grid">
+
+  <!-- ─────────── SIDEBAR ─────────── -->
+  <aside class="sidebar">
+
+    <!-- DATA SOURCE CARD -->
+    <div class="card animate-in">
+      <div class="card-title"><span class="icon">📡</span> Data Source</div>
+
+      <div class="tabs" style="display:grid;grid-template-columns:repeat(4,1fr);gap:3px">
+        <div class="tab active" onclick="switchTab('sample')">SAMPLE</div>
+        <div class="tab" onclick="switchTab('upload')">UPLOAD</div>
+        <div class="tab" onclick="switchTab('live')">LIVE</div>
+        <div class="tab" onclick="switchTab('category')">MORE</div>
+      </div>
+
+      <!-- Sample Tab -->
+      <div class="tab-content active" id="tab-sample">
+        <div class="form-group">
+          <label>Dataset Type</label>
+          <select id="datasetType">
+            <option value="stock">📈 Stock Price</option>
+            <option value="sine">〰 Sine Wave</option>
+            <option value="seasonal">🌡 Seasonal (Temperature)</option>
+            <option value="random">🎲 Random Walk</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Data Points <span class="range-val" id="pointsVal">300</span></label>
+          <input type="range" id="dataPoints" min="100" max="1000" value="300" step="50"
+                 oninput="document.getElementById('pointsVal').textContent=this.value"/>
+          <div class="range-display">
+            <span style="color:var(--text-dim);font-size:.75rem">100</span>
+            <span style="color:var(--text-dim);font-size:.75rem">1000</span>
+          </div>
+        </div>
+        <button class="btn btn-secondary" onclick="loadSampleData()">⚡ LOAD SAMPLE DATA</button>
+      </div>
+
+      <!-- Upload Tab -->
+      <div class="tab-content" id="tab-upload">
+        <div class="upload-zone" id="uploadZone" onclick="document.getElementById('csvFile').click()">
+          <input type="file" id="csvFile" accept=".csv" onchange="handleFileUpload(this)"/>
+          <div class="upload-icon">📂</div>
+          <div>Drop CSV file here or click to browse</div>
+          <div style="font-size:.75rem;margin-top:6px;color:var(--text-dim)">
+            Needs at least one numeric column
+          </div>
+        </div>
+        <div id="uploadInfo" style="display:none;margin-top:12px;padding:10px;
+             background:rgba(57,255,20,.06);border:1px solid rgba(57,255,20,.2);
+             border-radius:8px;font-family:var(--font-mono);font-size:.8rem;color:var(--neon-lime)">
+        </div>
+      </div>
+
+      <!-- Live Stock Tab -->
+      <div class="tab-content" id="tab-live">
+        <div class="form-group">
+          <label>Select Stock</label>
+          <select id="stockSymbol">
+            <option value="RELIANCE.NS">🏭 Reliance Industries</option>
+            <option value="TCS.NS">💻 TCS</option>
+            <option value="INFY.NS">🖥 Infosys</option>
+            <option value="SBIN.NS">🏦 SBI Bank</option>
+            <option value="HDFCBANK.NS">🏦 HDFC Bank</option>
+            <option value="WIPRO.NS">💡 Wipro</option>
+            <option value="AAPL">🍎 Apple</option>
+            <option value="TSLA">🚗 Tesla</option>
+            <option value="GOOGL">🔍 Google</option>
+            <option value="MSFT">🪟 Microsoft</option>
+          </select>
+        </div>
+        <div id="liveStockInfo" style="display:none;margin-top:10px;padding:10px;
+             background:rgba(0,245,255,.06);border:1px solid rgba(0,245,255,.2);
+             border-radius:8px;font-family:var(--font-mono);font-size:.78rem;color:var(--neon-cyan)">
+        </div>
+        <button class="btn btn-secondary" style="margin-top:10px" onclick="loadLiveStock()">
+          📡 FETCH LIVE DATA
+        </button>
+      </div>
+
+      <!-- MORE / Category Tab -->
+      <div class="tab-content" id="tab-category">
+        <div class="form-group">
+          <label>Domain</label>
+          <select id="categoryType" onchange="updateCategoryOptions()">
+            <option value="weather">🌡 Weather / Temperature</option>
+            <option value="covid">🦠 COVID / Disease</option>
+            <option value="sales">🛒 Sales / Revenue</option>
+            <option value="energy">⚡ Energy / Electricity</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Location / Name</label>
+          <select id="categoryOption">
+            <option value="Hyderabad">Hyderabad</option>
+            <option value="Mumbai">Mumbai</option>
+            <option value="Delhi">Delhi</option>
+            <option value="Chennai">Chennai</option>
+            <option value="Bangalore">Bangalore</option>
+            <option value="Kolkata">Kolkata</option>
+          </select>
+        </div>
+        <div id="categoryInfo" style="display:none;margin-top:10px;padding:10px;
+             background:rgba(191,95,255,.08);border:1px solid rgba(191,95,255,.3);
+             border-radius:8px;font-family:var(--font-mono);font-size:.78rem;color:var(--neon-violet)">
+        </div>
+        <button class="btn btn-secondary" style="margin-top:10px;border-color:var(--neon-violet);color:var(--neon-violet)" onclick="loadCategoryData()">
+          📊 LOAD DATA
+        </button>
+      </div>
+    </div>
+
+    <!-- MODEL CONFIG CARD -->
+    <div class="card animate-in delay-1">
+      <div class="card-title"><span class="icon">⚙️</span> Model Config</div>
+
+      <div class="form-group">
+        <label>Look-Back Window <span class="range-val" id="lookbackVal">30</span> days</label>
+        <input type="range" id="lookback" min="10" max="90" value="30" step="5"
+               oninput="document.getElementById('lookbackVal').textContent=this.value"/>
+        <div class="range-display">
+          <span style="color:var(--text-dim);font-size:.75rem">10</span>
+          <span style="color:var(--text-dim);font-size:.75rem">90</span>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>LSTM Units <span class="range-val" id="unitsVal">64</span></label>
+        <input type="range" id="units" min="16" max="256" value="64" step="16"
+               oninput="document.getElementById('unitsVal').textContent=this.value"/>
+      </div>
+
+      <div class="form-group">
+        <label>Epochs <span class="range-val" id="epochsVal">30</span></label>
+        <input type="range" id="epochs" min="5" max="100" value="30" step="5"
+               oninput="document.getElementById('epochsVal').textContent=this.value"/>
+      </div>
+
+      <div class="form-group">
+        <label>Dropout Rate <span class="range-val" id="dropoutVal">0.2</span></label>
+        <input type="range" id="dropout" min="0" max="0.5" value="0.2" step="0.05"
+               oninput="document.getElementById('dropoutVal').textContent=parseFloat(this.value).toFixed(2)"/>
+      </div>
+
+      <div class="form-group">
+        <label>Future Forecast <span class="range-val" id="futureVal">30</span> days</label>
+        <input type="range" id="futureSteps" min="7" max="90" value="30" step="7"
+               oninput="document.getElementById('futureVal').textContent=this.value"/>
+      </div>
+    </div>
+
+    <!-- TRAIN BUTTON -->
+    <div class="animate-in delay-2">
+      <button class="btn btn-primary" id="trainBtn" onclick="startTraining()" disabled>
+        🚀 TRAIN &amp; PREDICT
+      </button>
+    </div>
+
+    <!-- CONSOLE LOG CARD -->
+    <div class="card animate-in delay-3">
+      <div class="card-title"><span class="icon">🖥</span> Console</div>
+      <div class="console" id="console">
+        <span class="log-info">▶ System initialized…</span><br/>
+        <span class="log-info">▶ Awaiting data input…</span><br/>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ─────────── CHARTS AREA ─────────── -->
+  <main class="charts-area">
+
+    <!-- MAIN PREDICTION CHART -->
+    <div class="chart-card animate-in" style="position:relative">
+      <div class="chart-header">
+        <div>
+          <div class="chart-title">📊 Time Series + Prediction</div>
+          <div class="chart-subtitle" id="chartSubtitle">Load data and train the model to see results</div>
+        </div>
+        <div id="modeTag" style="font-family:var(--font-mono);font-size:.75rem;
+             color:var(--neon-gold);padding:4px 10px;border-radius:6px;
+             border:1px solid rgba(255,215,0,.2);background:rgba(255,215,0,.05);display:none">
+        </div>
+      </div>
+
+      <!-- placeholder -->
+      <div class="chart-placeholder" id="mainPlaceholder">
+        <div class="placeholder-icon">📉</div>
+        <div>Load a dataset to begin</div>
+      </div>
+      <div id="mainChart" style="display:none;height:340px"></div>
+
+      <!-- loading overlay -->
+      <div class="progress-overlay" id="mainLoading">
+        <div class="spinner"></div>
+        <div class="progress-text" id="loadingMsg">Initializing LSTM…</div>
+        <div class="progress-bar-wrap"><div class="progress-bar"></div></div>
+      </div>
+    </div>
+
+    <!-- METRICS ROW -->
+    <div class="metrics-row animate-in delay-1">
+      <div class="metric-card">
+        <div class="metric-label">MAE</div>
+        <div class="metric-value" id="metricMAE">—</div>
+        <div class="metric-unit">Mean Absolute Error</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">RMSE</div>
+        <div class="metric-value" id="metricRMSE">—</div>
+        <div class="metric-unit">Root Mean Sq Error</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">MAPE</div>
+        <div class="metric-value" id="metricMAPE">—</div>
+        <div class="metric-unit">Mean Abs % Error</div>
+      </div>
+    </div>
+
+    <!-- LOSS CHART -->
+    <div class="chart-card animate-in delay-2" style="position:relative">
+      <div class="chart-header">
+        <div>
+          <div class="chart-title" style="color:var(--neon-lime)">📉 Training Loss Curve</div>
+          <div class="chart-subtitle">How well the model learned over epochs</div>
+        </div>
+      </div>
+      <div class="chart-placeholder" id="lossPlaceholder">
+        <div class="placeholder-icon">📊</div>
+        <div>Loss curve appears after training</div>
+      </div>
+      <div id="lossChart" style="display:none;height:220px"></div>
+    </div>
+
+    <!-- FUTURE FORECAST CHART -->
+    <div class="chart-card animate-in delay-3" style="position:relative">
+      <div class="chart-header">
+        <div>
+          <div class="chart-title" style="color:var(--neon-violet)">🔮 Future Forecast</div>
+          <div class="chart-subtitle" id="futureSubtitle">Predicted values beyond known data</div>
+        </div>
+      </div>
+      <div class="chart-placeholder" id="futurePlaceholder">
+        <div class="placeholder-icon">🔮</div>
+        <div>Future predictions appear after training</div>
+      </div>
+      <div id="futureChart" style="display:none;height:220px"></div>
+    </div>
+
+  </main>
+</div><!-- end main-grid -->
+</div><!-- end wrapper -->
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<!-- ═══════════════════════════════════════════
+     JAVASCRIPT
+═══════════════════════════════════════════ -->
+<script>
+// ── STATE ─────────────────────────────────────
+let currentData = null;   // {dates, values, label}
+
+// ── PLOTLY DARK LAYOUT BASE ───────────────────
+const darkLayout = {
+  paper_bgcolor:'transparent',
+  plot_bgcolor: 'transparent',
+  font:{family:"'Share Tech Mono', monospace",color:'#7fa8c0',size:11},
+  xaxis:{gridcolor:'rgba(0,245,255,.06)',linecolor:'rgba(0,245,255,.15)',
+         tickcolor:'rgba(0,245,255,.3)',zerolinecolor:'transparent'},
+  yaxis:{gridcolor:'rgba(0,245,255,.06)',linecolor:'rgba(0,245,255,.15)',
+         tickcolor:'rgba(0,245,255,.3)',zerolinecolor:'transparent'},
+  legend:{bgcolor:'rgba(6,13,26,.8)',bordercolor:'rgba(0,245,255,.2)',borderwidth:1},
+  margin:{t:20,r:20,b:40,l:60},
+};
+const plotCfg = {responsive:true,displayModeBar:false};
+
+// ── TAB SWITCH ────────────────────────────────
+function switchTab(tab){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-'+tab).classList.add('active');
+}
+
+// ── LOGGING ───────────────────────────────────
+function log(msg, type='info'){
+  const el = document.getElementById('console');
+  const cls = {info:'log-info',ok:'log-ok',warn:'log-warn',error:'log-error'}[type];
+  const now = new Date().toLocaleTimeString();
+  el.innerHTML += `<span class="${cls}">[${now}] ${msg}</span><br/>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── TOAST ─────────────────────────────────────
+function showToast(msg, isErr=false){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast' + (isErr ? ' error' : '');
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 3500);
+}
+
+// ── LOADING OVERLAY ───────────────────────────
+let loadingMsgs = [
+  'Normalizing input data…','Building LSTM layers…',
+  'Forward propagation…','Backprop through time…',
+  'Updating weights…','Converging…'
+];
+let loadingIdx = 0;
+let loadingTimer;
+function showLoading(){
+  document.getElementById('mainLoading').classList.add('active');
+  loadingIdx = 0;
+  document.getElementById('loadingMsg').textContent = loadingMsgs[0];
+  loadingTimer = setInterval(()=>{
+    loadingIdx = (loadingIdx+1) % loadingMsgs.length;
+    document.getElementById('loadingMsg').textContent = loadingMsgs[loadingIdx];
+  }, 1800);
+}
+function hideLoading(){
+  clearInterval(loadingTimer);
+  document.getElementById('mainLoading').classList.remove('active');
+}
+
+// ── LOAD SAMPLE DATA ──────────────────────────
+async function loadSampleData(){
+  const type   = document.getElementById('datasetType').value;
+  const points = document.getElementById('dataPoints').value;
+  log(`Loading sample dataset: ${type} (${points} pts)…`);
+  try{
+    const res  = await fetch(`/api/sample-data?type=${type}&points=${points}`);
+    const data = await res.json();
+    if(!data.success) throw new Error(data.error);
+    currentData = data;
+    renderRawChart(data);
+    document.getElementById('trainBtn').disabled = false;
+    log(`Dataset loaded ✓ — ${data.values.length} data points`, 'ok');
+    showToast('✅ Dataset loaded successfully!');
+  }catch(e){
+    log('Error: '+e.message, 'error');
+    showToast('❌ '+e.message, true);
+  }
+}
+
+// ── FILE UPLOAD ───────────────────────────────
+async function handleFileUpload(input){
+  if(!input.files[0]) return;
+  const form = new FormData();
+  form.append('file', input.files[0]);
+  log(`Uploading ${input.files[0].name}…`);
+  try{
+    const res  = await fetch('/api/upload', {method:'POST', body:form});
+    const data = await res.json();
+    if(!data.success) throw new Error(data.error);
+    currentData = {dates:data.dates, values:data.values, label:data.label};
+    renderRawChart(currentData);
+    document.getElementById('trainBtn').disabled = false;
+    document.getElementById('uploadInfo').style.display='block';
+    document.getElementById('uploadInfo').innerHTML =
+      `✓ ${input.files[0].name}<br/>Rows: ${data.rows} | Column: ${data.label}`;
+    log(`File parsed ✓ — ${data.rows} rows`, 'ok');
+    showToast('✅ CSV uploaded!');
+  }catch(e){
+    log('Upload error: '+e.message, 'error');
+    showToast('❌ '+e.message, true);
+  }
+}
+
+// Drag-drop
+const zone = document.getElementById('uploadZone');
+zone.addEventListener('dragover', e=>{e.preventDefault();zone.classList.add('dragover')});
+zone.addEventListener('dragleave', ()=>zone.classList.remove('dragover'));
+zone.addEventListener('drop', e=>{
+  e.preventDefault();zone.classList.remove('dragover');
+  if(e.dataTransfer.files[0]){
+    const inp = document.getElementById('csvFile');
+    inp.files = e.dataTransfer.files;
+    handleFileUpload(inp);
+  }
+});
+
+// ── RENDER RAW CHART ──────────────────────────
+function renderRawChart(data){
+  document.getElementById('mainPlaceholder').style.display='none';
+  document.getElementById('mainChart').style.display='block';
+  document.getElementById('chartSubtitle').textContent =
+    `${data.values.length} data points · ${data.label}`;
+
+  const trace = {
+    x: data.dates, y: data.values,
+    type:'scatter',mode:'lines',name:'Raw Data',
+    line:{color:'#00b4d8',width:2},
+    fill:'tozeroy',fillcolor:'rgba(0,180,216,.05)'
+  };
+  Plotly.react('mainChart',[trace],
+    {...darkLayout,yaxis:{...darkLayout.yaxis,title:{text:data.label,font:{color:'#7fa8c0'}}}},
+    plotCfg);
+}
+
+// ── TRAIN & PREDICT ───────────────────────────
+async function startTraining(){
+  if(!currentData){showToast('⚠️ Load data first!',true);return}
+  const btn = document.getElementById('trainBtn');
+  btn.disabled = true;
+  showLoading();
+  log('Submitting training job to server…', 'warn');
+  const payload = {
+    values:       currentData.values,
+    dates:        currentData.dates,
+    lookback:     +document.getElementById('lookback').value,
+    epochs:       +document.getElementById('epochs').value,
+    units:        +document.getElementById('units').value,
+    dropout:      +document.getElementById('dropout').value,
+    future_steps: +document.getElementById('futureSteps').value,
+  };
+  try{
+    const startRes = await fetch('/api/train', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+    const startData = await startRes.json();
+    if(!startData.success) throw new Error(startData.error || 'Failed to start job');
+    const jobId = startData.job_id;
+    log(`Job started (id: ${jobId.slice(0,8)}...)`, 'ok');
+    await pollUntilDone(jobId);
+  }catch(e){
+    hideLoading();
+    log('Error: '+e.message, 'error');
+    showToast('❌ '+e.message, true);
+    btn.disabled = false;
+  }
+}
+
+async function pollUntilDone(jobId){
+  const btn = document.getElementById('trainBtn');
+  return new Promise((resolve, reject) => {
+    const interval = setInterval(async () => {
+      try{
+        const res  = await fetch(`/api/status/${jobId}`);
+        const data = await res.json();
+        if(!data.success){ clearInterval(interval); reject(new Error(data.error)); return; }
+        document.getElementById('loadingMsg').textContent = data.msg || 'Training…';
+        if(data.msg) log(data.msg, 'info');
+        if(data.status === 'done'){
+          clearInterval(interval);
+          const rRes   = await fetch(`/api/result/${jobId}`);
+          const result = await rRes.json();
+          if(!result.success) throw new Error(result.error);
+          hideLoading();
+          renderResults(result, currentData);
+          log(`✓ Done — Mode: ${result.mode}, Epochs: ${result.epochs_ran}`, 'ok');
+          log(`MAE=${result.metrics.mae}  RMSE=${result.metrics.rmse}  MAPE=${result.metrics.mape}%`, 'ok');
+          showToast(`🎉 Done! MAE: ${result.metrics.mae}`);
+          btn.disabled = false;
+          resolve();
+        } else if(data.status === 'error'){
+          clearInterval(interval);
+          hideLoading();
+          log('Server error: '+data.error, 'error');
+          showToast('❌ '+(data.error||'Unknown error'), true);
+          btn.disabled = false;
+          reject(new Error(data.error));
+        }
+      }catch(e){
+        clearInterval(interval);
+        hideLoading();
+        log('Poll error: '+e.message, 'error');
+        showToast('❌ '+e.message, true);
+        btn.disabled = false;
+        reject(e);
+      }
+    }, 3000);
+  });
+}
+
+// ── RENDER RESULTS ────────────────────────────
+function renderResults(result, rawData){
+
+  // ── Mode badge
+  const tag = document.getElementById('modeTag');
+  tag.textContent = result.mode;
+  tag.style.display = 'block';
+
+  // ── Main chart  (actual + train + test-predicted + future)
+  const split  = result.split_index;
+  const lb     = result.lookback;
+  const allX   = rawData.dates;
+  const allY   = rawData.values;
+  const testX  = allX.slice(split);
+  const futureX= result.future_dates || Array.from({length:result.future_predicted.length},(_,i)=>i+allX.length);
+
+  const traceActual = {
+    x:allX, y:allY, name:'Historical', type:'scatter', mode:'lines',
+    line:{color:'#00b4d8',width:1.5},
+    fill:'tozeroy',fillcolor:'rgba(0,180,216,.04)'
+  };
+  const tracePred = {
+    x:testX, y:result.test_predicted, name:'LSTM Test Fit',
+    type:'scatter',mode:'lines',
+    line:{color:'#ff0080',width:2,dash:'dot'}
+  };
+  const traceFuture = {
+    x:futureX, y:result.future_predicted, name:'Forecast',
+    type:'scatter',mode:'lines',
+    line:{color:'#ffd700',width:2.5},
+    fill:'tozeroy',fillcolor:'rgba(255,215,0,.04)'
+  };
+
+  Plotly.react('mainChart',[traceActual,tracePred,traceFuture],
+    {...darkLayout,
+     yaxis:{...darkLayout.yaxis,title:{text:rawData.label,font:{color:'#7fa8c0'}}},
+     shapes:[{type:'line',x0:allX[split],x1:allX[split],y0:0,y1:1,
+               yref:'paper',line:{color:'rgba(255,215,0,.4)',dash:'dot',width:1}}]
+    }, plotCfg);
+
+  document.getElementById('chartSubtitle').textContent =
+    `Historical · Test Fit · ${result.future_predicted.length}-step Forecast`;
+
+  // ── Metrics
+  animateMetric('metricMAE',  result.metrics.mae);
+  animateMetric('metricRMSE', result.metrics.rmse);
+  animateMetric('metricMAPE', result.metrics.mape + '%');
+
+  // ── Loss curve
+  if(result.train_loss && result.train_loss.length > 0){
+    document.getElementById('lossPlaceholder').style.display='none';
+    document.getElementById('lossChart').style.display='block';
+    const epochs = result.train_loss.map((_,i)=>i+1);
+    const lossTraces = [
+      {x:epochs,y:result.train_loss,name:'Train Loss',type:'scatter',mode:'lines',
+       line:{color:'#00f5ff',width:2}},
+    ];
+    if(result.val_loss && result.val_loss.length){
+      lossTraces.push({x:epochs,y:result.val_loss,name:'Val Loss',type:'scatter',mode:'lines',
+        line:{color:'#bf5fff',width:2,dash:'dash'}});
+    }
+    Plotly.react('lossChart',lossTraces,
+      {...darkLayout,yaxis:{...darkLayout.yaxis,title:{text:'MSE Loss',font:{color:'#7fa8c0'}}}},
+      plotCfg);
+  }
+
+  // ── Future chart (standalone zoom-in)
+  document.getElementById('futurePlaceholder').style.display='none';
+  document.getElementById('futureChart').style.display='block';
+  document.getElementById('futureSubtitle').textContent =
+    `${result.future_predicted.length}-day ahead forecast`;
+
+  const futureTrace = {
+    x:futureX, y:result.future_predicted, name:'Forecast',
+    type:'scatter',mode:'lines+markers',
+    line:{color:'#bf5fff',width:2.5},
+    marker:{color:'#ffd700',size:5},
+    fill:'tozeroy',fillcolor:'rgba(191,95,255,.07)'
+  };
+  Plotly.react('futureChart',[futureTrace],
+    {...darkLayout,
+     yaxis:{...darkLayout.yaxis,title:{text:rawData.label,font:{color:'#7fa8c0'}}}
+    },plotCfg);
+}
+
+// ── LOAD LIVE STOCK DATA ─────────────────────
+async function loadLiveStock(){
+  const symbol = document.getElementById('stockSymbol').value;
+  const info   = document.getElementById('liveStockInfo');
+  info.style.display = 'block';
+  info.textContent   = 'Fetching live data from Yahoo Finance...';
+  log(`Downloading ${symbol} from Yahoo Finance...`, 'warn');
+  try{
+    const res  = await fetch('/api/download-stock', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({symbol})
+    });
+    const data = await res.json();
+    if(!data.success) throw new Error(data.error);
+
+    currentData = {dates: data.dates, values: data.values, label: data.label};
+    renderRawChart(currentData);
+    document.getElementById('trainBtn').disabled = false;
+
+    info.innerHTML =
+      `✓ ${data.symbol}<br/>` +
+      `Rows: ${data.rows} days | ` +
+      `From: ${data.from}<br/>` +
+      `Price: Rs.${data.min} — Rs.${data.max}`;
+
+    log(`Live data loaded: ${data.rows} trading days`, 'ok');
+    showToast(`✅ ${data.symbol} — ${data.rows} days loaded!`);
+  }catch(e){
+    info.textContent = '❌ Error: ' + e.message;
+    log('Live fetch error: '+e.message, 'error');
+    showToast('❌ '+e.message, true);
+  }
+}
+
+// ── ANIMATE METRIC NUMBER ─────────────────────
+function animateMetric(id, finalVal){
+  const el = document.getElementById(id);
+  const isStr = typeof finalVal === 'string';
+  const num   = parseFloat(finalVal);
+  let cur = 0, steps = 40, step = 0;
+  const timer = setInterval(()=>{
+    step++;
+    cur = num * (step/steps);
+    el.textContent = isStr ? cur.toFixed(2)+'%' : cur.toFixed(4);
+    if(step >= steps){clearInterval(timer);el.textContent = isStr ? finalVal : num.toFixed(4)}
+  }, 30);
+}
+
+// ── CATEGORY OPTIONS MAP ─────────────────────
+const CATEGORY_OPTIONS = {
+  weather: ["Hyderabad","Mumbai","Delhi","Chennai","Bangalore","Kolkata"],
+  covid:   ["India","USA","UK","Brazil","Italy","South Africa"],
+  sales:   ["E-Commerce Store","Retail Chain","Supermarket","Fashion Store","Electronics Shop"],
+  energy:  ["Delhi","Mumbai","Chennai","Kolkata","Hyderabad","Bangalore"],
+};
+
+const CATEGORY_LABELS = {
+  weather: "Temperature (°C)",
+  covid:   "Daily New Cases",
+  sales:   "Daily Revenue (Rs.)",
+  energy:  "Electricity Demand (MW)",
+};
+
+function updateCategoryOptions(){
+  const cat    = document.getElementById('categoryType').value;
+  const sel    = document.getElementById('categoryOption');
+  const opts   = CATEGORY_OPTIONS[cat] || [];
+  sel.innerHTML = opts.map(o => `<option value="${o}">${o}</option>`).join('');
+}
+
+async function loadCategoryData(){
+  const category = document.getElementById('categoryType').value;
+  const option   = document.getElementById('categoryOption').value;
+  const info     = document.getElementById('categoryInfo');
+  info.style.display = 'block';
+  info.textContent   = 'Generating ' + category + ' data...';
+  log('Loading ' + category + ' data for ' + option + '...', 'warn');
+  try{
+    const res  = await fetch('/api/category-data', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({category, option})
+    });
+    const data = await res.json();
+    if(!data.success) throw new Error(data.error);
+    currentData = {dates: data.dates, values: data.values, label: data.label};
+    renderRawChart(currentData);
+    document.getElementById('trainBtn').disabled = false;
+    info.innerHTML = '✓ ' + data.label + '<br/>Points: ' + data.values.length + '<br/>' +
+      '💾 Saved: downloaded_data/' + (data.saved_file || '');
+    log('Loaded: ' + data.label + ' (' + data.values.length + ' points)', 'ok');
+    if(data.saved_file) log('CSV saved: downloaded_data/' + data.saved_file, 'ok');
+    showToast('Saved: ' + (data.saved_file || data.label));
+  }catch(e){
+    info.textContent = 'Error: ' + e.message;
+    log('Error: ' + e.message, 'error');
+    showToast('Error: ' + e.message, true);
+  }
+}
+</script>
+</body>
+</html>
